@@ -46,17 +46,20 @@ This script will:
 If you prefer to set up manually:
 
 1. Create a Python virtual environment:
+
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
 2. Install dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
 
 3. Set up your OpenAI API key (if using LLM classification):
+
    ```bash
    export OPENAI_API_KEY=your_api_key_here
    ```

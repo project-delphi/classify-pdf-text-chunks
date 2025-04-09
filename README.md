@@ -1,6 +1,6 @@
 # PDF Document Classifier
 
-This application provides a FastAPI service for classifying PDF documents using RAG (Retrieval-Augmented Generation) and LLMs. It assigns one of three ordinal labels — `bad`, `neutral`, `good` — to documents based on their contents.
+This application provides a FastAPI service for classifying PDF documents based on their content quality. It uses sentence embeddings and machine learning to assign one of three ordinal labels — `bad`, `neutral`, `good` — to documents based on their writing quality, structure, and content.
 
 ## Project Structure
 
@@ -19,6 +19,20 @@ This application provides a FastAPI service for classifying PDF documents using 
 ├── requirements.txt
 └── setup.sh           # Setup and run script
 ```
+
+## How It Works
+
+The classifier uses a two-stage approach:
+
+1. **Text Processing**:
+   - Extracts text from PDF documents
+   - Splits text into manageable chunks
+   - Generates embeddings using SentenceTransformer
+
+2. **Classification**:
+   - Uses a Logistic Regression model trained on labeled examples
+   - Optionally uses GPT-4 for more nuanced classification
+   - Aggregates predictions across chunks to determine final document quality
 
 ## Setup
 
@@ -46,20 +60,17 @@ This script will:
 If you prefer to set up manually:
 
 1. Create a Python virtual environment:
-
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
 2. Install dependencies:
-
    ```bash
    pip install -r requirements.txt
    ```
 
 3. Set up your OpenAI API key (if using LLM classification):
-
    ```bash
    export OPENAI_API_KEY=your_api_key_here
    ```

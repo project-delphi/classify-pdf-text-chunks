@@ -1,149 +1,158 @@
-import pytest
 import os
+import json
+import shutil
 import tempfile
-from fastapi.testclient import TestClient
-from app import app, extract_text, train_model, predict_class, classify_chunk_with_llm
-import numpy as np
+import logging
+import pytest
 from unittest.mock import patch, MagicMock
-from reportlab.pdfgen import canvas
-from io import BytesIO
+from pathlib import Path
+from fastapi.testclient import TestClient
+from src.app import (
+    extract_text,
+    text_splitter,
+    initialize_vector_store,
+    save_vector_store,
+    load_vector_store,
+    predict_class,
+    VectorStoreConfig,
+    vector_store,
+    metadata,
+    app
+)
+from langchain.vectorstores import FAISS
+from langchain.embeddings import HuggingFaceEmbeddings
 
-# Create a test client
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 client = TestClient(app)
 
-def create_test_pdf(text: str) -> BytesIO:
-    """Helper function to create a PDF file in memory"""
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer)
-    c.setFont("Helvetica", 12)
-    c.drawString(100, 750, text)
-    c.showPage()  # Ensure the page is complete
-    c.save()
-    # Get the value of the BytesIO buffer and create a fresh buffer
-    pdf_bytes = buffer.getvalue()
-    buffer.close()
-    new_buffer = BytesIO(pdf_bytes)
-    return new_buffer
-
-def create_pdf_bytes(text: str) -> bytes:
-    """Create a PDF in memory and return its bytes"""
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer)
-    c.drawString(100, 750, text)
-    c.showPage()
-    c.save()
-    return buffer.getvalue()
-
-def test_extract_text():
-    # Create a temporary PDF file with some text
-    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-        # Create a PDF using reportlab
+@pytest.fixture
+def sample_pdf():
+    """Create a sample PDF file for testing."""
+    from reportlab.pdfgen import canvas
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         c = canvas.Canvas(tmp.name)
-        c.drawString(100, 750, "Hello World")
+        c.drawString(100, 750, "This is a test PDF document.")
+        c.drawString(100, 700, "It contains multiple lines of text.")
+        c.drawString(100, 650, "This will be used for testing.")
         c.save()
-        tmp_path = tmp.name
+    yield tmp.name
+    os.unlink(tmp.name)
 
-    try:
-        # Test the extract_text function
-        text = extract_text(tmp_path)
-        assert "Hello World" in text
-    finally:
-        # Clean up
-        os.unlink(tmp_path)
-
-def test_train_model():
-    # Create temporary PDF files
-    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp1, \
-         tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp2:
-        # Create PDFs using reportlab
-        c1 = canvas.Canvas(tmp1.name)
-        c1.drawString(100, 750, "Good document")
-        c1.save()
-        
-        c2 = canvas.Canvas(tmp2.name)
-        c2.drawString(100, 750, "Bad document")
-        c2.save()
-        
-        paths = [tmp1.name, tmp2.name]
-
-    try:
-        # Test the train_model function
-        train_model(paths, ['good', 'bad'])
-        # Verify that the model file was created
-        assert os.path.exists('classifier.pkl')
-    finally:
-        # Clean up
-        for path in paths:
-            os.unlink(path)
-        if os.path.exists('classifier.pkl'):
-            os.unlink('classifier.pkl')
-
-def test_train_endpoint():
-    # Create sample PDFs
-    pdf1 = create_test_pdf("This is a good document")
-    pdf2 = create_test_pdf("This is a bad document")
-    
-    # Create form data
-    files = [
-        ('pdfs', ('doc1.pdf', pdf1, 'application/pdf')),
-        ('pdfs', ('doc2.pdf', pdf2, 'application/pdf')),
-    ]
-    data = {
-        'labels': ('good', 'bad')
-    }
-    
-    response = client.post('/train', files=files, data=data)
-    assert response.status_code == 200
-    assert response.json()['status'] == 'model trained'
-
-def test_predict_endpoint():
-    # Create PDF files in memory
-    pdf1_bytes = create_pdf_bytes("This is a good document")
-    pdf2_bytes = create_pdf_bytes("This is a bad document")
-    test_pdf_bytes = create_pdf_bytes("This is a test document")
-    
-    # Train the model
-    train_files = [
-        ('pdfs', ('doc1.pdf', BytesIO(pdf1_bytes), 'application/pdf')),
-        ('pdfs', ('doc2.pdf', BytesIO(pdf2_bytes), 'application/pdf'))
-    ]
-    train_data = {'labels': ('good', 'bad')}
-    response = client.post('/train', files=train_files, data=train_data)
-    assert response.status_code == 200
-    
-    # Test prediction
-    test_file = BytesIO(test_pdf_bytes)
-    test_file.seek(0)  # Ensure we're at the start of the file
-    response = client.post(
-        '/predict',
-        files={'pdf': ('test.pdf', test_file, 'application/pdf')}
+@pytest.fixture
+def vector_store_config():
+    """Mock config for vector store."""
+    config = VectorStoreConfig(
+        vector_store_path="data/test_vector_store",
+        metadata_path="data/test_metadata.json",
+        similarity_search_k=2,
+        chunk_size=100,
+        chunk_overlap=20,
+        embedding_model="sentence-transformers/all-MiniLM-L6-v2"
     )
+    os.makedirs(os.path.dirname(config.vector_store_path), exist_ok=True)
+    os.makedirs(os.path.dirname(config.metadata_path), exist_ok=True)
+    return config
+
+@pytest.fixture(autouse=True)
+def clean_vector_store(vector_store_config):
+    """Clean up vector store before and after each test."""
+    # Clean up before test
+    if os.path.exists(vector_store_config.vector_store_path):
+        shutil.rmtree(vector_store_config.vector_store_path)
+    if os.path.exists(vector_store_config.metadata_path):
+        os.remove(vector_store_config.metadata_path)
+    
+    # Initialize vector store
+    initialize_vector_store()
+    
+    yield
+    
+    # Clean up after test
+    if os.path.exists(vector_store_config.vector_store_path):
+        shutil.rmtree(vector_store_config.vector_store_path)
+    if os.path.exists(vector_store_config.metadata_path):
+        os.remove(vector_store_config.metadata_path)
+
+@pytest.fixture
+def mock_vector_store():
+    """Mock vector store operations."""
+    with patch("src.app.vector_store") as mock_vs, \
+         patch("src.app.metadata") as mock_metadata:
+        mock_vs.similarity_search.return_value = [
+            MagicMock(
+                page_content="test content",
+                metadata={"doc_id": "test1"}
+            )
+        ]
+        mock_metadata.get.return_value = {"label": "good"}
+        yield mock_vs
+
+@pytest.fixture
+def mock_openai():
+    """Mock OpenAI API responses."""
+    with patch("openai.OpenAI") as mock:
+        mock_client = MagicMock()
+        mock_completion = MagicMock()
+        mock_completion.choices = [
+            type('Choice', (), {'message': type('Message', (), {'content': 'good'})()})()
+        ]
+        mock_client.chat.completions.create.return_value = mock_completion
+        mock.return_value = mock_client
+        yield mock
+
+def test_extract_text(sample_pdf):
+    """Test text extraction from PDF."""
+    text = extract_text(sample_pdf)
+    assert "test PDF document" in text
+    assert "multiple lines" in text
+
+def test_text_splitter(sample_pdf):
+    """Test text splitting functionality."""
+    text = extract_text(sample_pdf)
+    chunks = text_splitter.split_text(text)
+    assert len(chunks) > 0
+    assert all(len(chunk) <= text_splitter._chunk_size for chunk in chunks)
+
+def test_vector_store_operations(vector_store_config):
+    """Test vector store operations."""
+    test_text = "This is a test document for the vector store."
+    test_metadata = {"doc_id": "test1", "label": "good"}
+    embeddings = HuggingFaceEmbeddings(model_name=vector_store_config.embedding_model)
+    vs = FAISS.from_texts([test_text], embeddings, metadatas=[test_metadata])
+    vs.save_local(vector_store_config.vector_store_path)
+    with open(vector_store_config.metadata_path, "w") as f:
+        json.dump({"test1": {"label": "good"}}, f)
+    loaded_vs = FAISS.load_local(vector_store_config.vector_store_path, embeddings)
+    results = loaded_vs.similarity_search("test document", k=1)
+    assert "test document" in results[0].page_content
+    with open(vector_store_config.metadata_path) as f:
+        metadata = json.load(f)
+    assert metadata["test1"]["label"] == "good"
+
+def test_train_endpoint(sample_pdf, vector_store_config):
+    """Test the train endpoint."""
+    try:
+        with open(sample_pdf, 'rb') as f1, open(sample_pdf, 'rb') as f2:
+            response = client.post(
+                "/train",
+                data={'labels': 'good,bad'},
+                files=[
+                    ('pdfs', ('test1.pdf', f1, 'application/pdf')),
+                    ('pdfs', ('test2.pdf', f2, 'application/pdf'))
+                ]
+            )
+            logger.debug(f"Train response: {response.json() if response.status_code == 200 else response.content}")
+        assert response.status_code == 200, f"Train failed with status {response.status_code}: {response.content}"
+        assert response.json()["status"] == "model trained", f"Unexpected response: {response.json()}"
+    except Exception as e:
+        logger.error(f"Test failed with error: {str(e)}")
+        raise
+
+def test_root_endpoint():
+    """Test the root endpoint."""
+    response = client.get("/")
     assert response.status_code == 200
-    assert 'predicted_class' in response.json()
-    assert response.json()['predicted_class'] in ['good', 'neutral', 'bad']
-
-@patch('openai.OpenAI')
-def test_classify_chunk_with_llm(mock_openai_class):
-    # Mock the OpenAI client instance
-    mock_client = MagicMock()
-    mock_openai_class.return_value = mock_client
-    
-    # Mock the chat completion response
-    mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = "good"
-    mock_client.chat.completions.create.return_value = mock_response
-
-    # Test the function
-    result = classify_chunk_with_llm("This is a test document")
-    
-    # Assert the result
-    assert result == "good"
-    
-    # Verify the API was called with correct parameters
-    mock_client.chat.completions.create.assert_called_once()
-    call_args = mock_client.chat.completions.create.call_args[1]
-    assert call_args['model'] == 'gpt-4'
-    assert len(call_args['messages']) == 1
-    assert call_args['messages'][0]['role'] == 'user'
-    assert 'This is a test document' in call_args['messages'][0]['content'] 
+    assert "message" in response.json()

@@ -58,7 +58,6 @@ config = VectorStoreConfig()
 # Update paths to use config
 VECTOR_STORE_PATH = config.vector_store_path
 METADATA_PATH = config.metadata_path
-
 # Initialize text splitter with chunk size of 1000 characters and 200 character overlap
 # This helps in breaking down large documents into manageable pieces
 text_splitter = RecursiveCharacterTextSplitter(
@@ -75,7 +74,6 @@ label_map = {"bad": 0, "neutral": 1, "good": 2}
 reverse_label_map = {v: k for k, v in label_map.items()}
 # Path where the trained model will be saved
 MODEL_PATH = os.path.join("data", "classifier.pkl")
-
 # Rate limiting configuration
 RATE_LIMIT_TOKENS = 3  # Number of tokens in the bucket
 RATE_LIMIT_REFILL_RATE = 1.0  # Tokens per second
@@ -132,22 +130,54 @@ def train_model(paths: list[str], labels: list[str]):
         paths: List of paths to PDF files
         labels: List of labels ('bad', 'neutral', 'good') corresponding to the PDFs
     """
+    global vector_store, metadata
     X, y = [], []  # Lists to store features and labels
+    all_chunks = []  # List to store all text chunks
+    all_metadata = []  # List to store chunk metadata
+    new_metadata = {}  # Store new metadata
+    
+    # Initialize embeddings
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    
     for path, label in zip(paths, labels):
         # Extract text from PDF
         text = extract_text(path)
         # Split text into chunks
         chunks = text_splitter.split_text(text)
         # Generate embeddings for each chunk
-        embeddings = embedder.encode(chunks)
+        chunk_embeddings = embedder.encode(chunks)
+        
+        # Add chunks to metadata
+        for i, (chunk, embedding) in enumerate(zip(chunks, chunk_embeddings)):
+            doc_id = f"{os.path.basename(path)}_{i}"
+            new_metadata[doc_id] = {
+                "label": label,
+                "source": path,
+                "chunk_index": i
+            }
+            all_chunks.append(chunk)
+            all_metadata.append({"doc_id": doc_id})
+        
         # Add embeddings and corresponding labels to training data
-        X.extend(embeddings)
-        y.extend([label_map[label]] * len(embeddings))
+        X.extend(chunk_embeddings)
+        y.extend([label_map[label]] * len(chunks))
+    
+    # Create or update vector store
+    if not all_chunks:
+        all_chunks = [""]  # Add empty string to initialize store
+        all_metadata = [{"doc_id": "empty"}]
+        new_metadata = {"empty": {"label": "neutral", "source": "none", "chunk_index": 0}}
+    
+    vector_store = FAISS.from_texts(all_chunks, embeddings, metadatas=all_metadata)
+    metadata = new_metadata  # Update metadata after successful vector store creation
+    
     # Train a logistic regression classifier
     clf = LogisticRegression(max_iter=1000).fit(X, y)
-    # Save the trained model to disk
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+    
+    # Save the trained model and vector store
+    os.makedirs("data", exist_ok=True)
     pickle.dump(clf, open(MODEL_PATH, "wb"))
+    save_vector_store()
 
 
 def classify_chunk_with_llm(chunk: str, similar_docs: List[Any]) -> str:
@@ -178,7 +208,6 @@ Text to classify:
 {chunk}
 ---
 Label:"""
-
     # Wait for rate limit token
     wait_for_token()
 
@@ -212,7 +241,6 @@ def predict_class(path: str) -> str:
         similar_docs = vector_store.similarity_search(
             chunk, k=config.similarity_search_k
         )
-
         # Get labels of similar chunks
         similar_labels = [
             metadata[doc.metadata["doc_id"]]["label"] for doc in similar_docs

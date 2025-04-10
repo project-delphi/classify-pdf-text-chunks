@@ -1,4 +1,4 @@
-# PDF Document Classifier
+# PDF Document Text Chunk Classifier
 
 This application provides a FastAPI service for classifying PDF documents based on their content quality. It uses sentence embeddings, machine learning, and Retrieval-Augmented Generation (RAG) to assign one of three ordinal labels — `bad`, `neutral`, `good` — to documents based on their writing quality, structure, and content.
 

@@ -10,4 +10,6 @@ pytest==8.0.0
 pytest-asyncio==0.23.5
 httpx==0.24.1
 reportlab==4.0.8
-urllib3<2.0.0 
+urllib3<2.0.0
+black==24.1.1
+isort==5.13.2 

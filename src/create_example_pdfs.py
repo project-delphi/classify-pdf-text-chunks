@@ -2,28 +2,30 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 import os
 
+
 def create_pdf(filename, content):
     """Create a PDF file with the given content."""
     c = canvas.Canvas(filename, pagesize=letter)
     width, height = letter
-    
+
     # Set font and size
     c.setFont("Helvetica", 12)
-    
+
     # Split content into lines and write to PDF
-    lines = content.split('\n')
+    lines = content.split("\n")
     y = height - 50  # Start from top of page
-    
+
     for line in lines:
         if y < 50:  # If we're near the bottom of the page
             c.showPage()  # Create a new page
             y = height - 50  # Reset y position
             c.setFont("Helvetica", 12)
-        
+
         c.drawString(50, y, line)
         y -= 20  # Move down for next line
-    
+
     c.save()
+
 
 # Create training data directory if it doesn't exist
 os.makedirs("data/training", exist_ok=True)
@@ -78,4 +80,4 @@ create_pdf("data/training/bad_doc2.pdf", bad_content_2)
 print("Created example PDF files in the data/training directory:")
 print("- good_doc1.pdf and good_doc2.pdf (positive examples)")
 print("- neutral_doc1.pdf and neutral_doc2.pdf (neutral examples)")
-print("- bad_doc1.pdf and bad_doc2.pdf (negative examples)") 
+print("- bad_doc1.pdf and bad_doc2.pdf (negative examples)")
